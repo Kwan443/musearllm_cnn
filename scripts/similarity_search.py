@@ -70,13 +70,13 @@ def main():
     optimized_search = OptimizedSimilaritySearch()
     
     query_images = [
-        "../artworks/query_image1.jpg",
-        "../artworks/query_image2.jpg", 
-        "../artworks/query_image3.jpg",
-        "../artworks/query_image4.jpg",
-        "../artworks/query_image5.jpg", 
-        "../artworks/query_image6.jpg",
-        "../artworks/query_image7.jpg"
+        "../query_artworks/query_image1.jpg",
+        "../query_artworks/query_image2.jpg", 
+        "../query_artworks/query_image3.jpg",
+        "../query_artworks/query_image4.jpg",
+        "../query_artworks/query_image5.jpg", 
+        "../query_artworks/query_image6.jpg",
+        "../query_artworks/query_image7.jpg"
     ]
     
     print("OPTIMIZED SIMILARITY SEARCH")
