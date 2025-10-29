@@ -138,7 +138,7 @@ def main():
     extractor = MultiArtworkFeatureExtractor()
     
     # Process the test_multi directory
-    test_multi_dir = "../test_multi"
+    test_multi_dir = "../photos"
     
     if os.path.exists(test_multi_dir):
         extractor.process_multi_photo_directory(test_multi_dir)
