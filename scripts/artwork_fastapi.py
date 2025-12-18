@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import json
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,6 +10,10 @@ import uvicorn
 from PIL import Image
 import io
 import torch
+import requests
+from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+
 
 from multi_feature_extractor import MultiArtworkFeatureExtractor
 from multi_similarity_search import MultiPhotoSimilaritySearch
@@ -48,6 +52,12 @@ class ArtworkInfo(BaseModel):
 class ArtworksResponse(BaseModel):
     artworks: List[ArtworkInfo]
     total_artworks: int
+
+class GoogleArtWorkResponse(BaseModel):
+    success: bool
+    match_title: str
+    match_paragraph: List[str]
+    match_table: List[str]
 
 class MatchResult(BaseModel):
     rank: int
@@ -143,6 +153,83 @@ async def get_artworks():
     return ArtworksResponse(
         artworks=artworks,
         total_artworks=len(artworks)
+    )
+
+@app.get(
+    "/artworkByGoogle",
+    response_model=GoogleArtWorkResponse,
+    summary="Get the artwork from google",
+    description="Get information of an artwork by Google lens"
+)
+async def getArtworkByGoogle(imageUrl: str = Query(..., description="Image URL to analyze")):
+    """Get information of an artwork by Google lens"""
+    print("Image URL:", imageUrl)
+    if not search_engine:
+        raise HTTPException(status_code=500, detail="Search engine not initialized")
+    load_dotenv()
+    SEPRAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+    print(SEPRAPI_API_KEY)
+    params={
+        "api_key": SEPRAPI_API_KEY,
+        "engine": "google_lens",
+        "url": imageUrl, # Image URL
+    }
+
+    search = requests.get("https://serpapi.com/search", params=params)
+    response = search.json()
+    
+
+    firstResult = response.get("visual_matches")[0]
+    firstResultUrl = firstResult.get("link")
+
+    if not firstResultUrl:
+        raise HTTPException(status_code=404, detail="First match has no link.")
+    print("🔗 Scraping URL:", firstResultUrl)
+
+    # Step 3 — Scrape webpage content
+    page_response = requests.get(firstResultUrl, timeout=20, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    })
+
+    if page_response.status_code != 200:
+        raise HTTPException(status_code=page_response.status_code, detail="Failed to fetch webpage")
+
+    # Step 4 — Parse content with BeautifulSoup
+    soup = BeautifulSoup(page_response.text, "html.parser")
+
+    # Example extraction: title and paragraph text
+    page_title = soup.title.string if soup.title else "No title"
+    match_paragraph = []
+    for i, p_tag in enumerate(soup.find_all("p")):
+        if i >= 3:
+            break
+        text = p_tag.get_text(strip=True)
+        if text:
+            match_paragraph.append(text)
+
+    # Step 5 — Extract first 3 tables and all their cells
+    match_table = []
+    for i, t in enumerate(soup.find_all("table")):
+        if i >= 2:
+            break
+        # Extract cells from all rows
+        rows = []
+        for tr in t.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if cells:
+                rows.append(cells)
+
+        # Convert this table (list of rows) into a single readable string
+        if rows:
+            # " | " separates cells, "\n" separates rows
+            table_text = "\n".join(" | ".join(row) for row in rows)
+            match_table.append(table_text)
+    # print("Content: ", {match_paragraph,match_table})
+    return GoogleArtWorkResponse(
+        success=True,
+        match_title=page_title,
+        match_paragraph = match_paragraph or [],
+        match_table=match_table or []
     )
 
 @app.post(
