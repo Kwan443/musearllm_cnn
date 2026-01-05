@@ -228,108 +228,108 @@ async def getArtworkByGoogle(imageUrl: str = Query(..., description="Image URL t
                 table_text = "\n".join(" | ".join(row) for row in rows)
                 match_table.append(table_text)
         # print("Content: ", {match_paragraph,match_table})
-        return GoogleArtWorkResponse(
-            success=True,
-            match_title=page_title,
-            match_paragraph = match_paragraph or [],
-            match_table=match_table or []
-        )
-
-    @app.post(
-        "/recognize",
-        response_model=RecognitionResponse,
-        summary="Recognize Artwork",
-        description="Upload an image and get the top 3 most similar artworks with similarity scores",
-        responses={
-            400: {"model": ErrorResponse},
-            500: {"model": ErrorResponse}
-        }
+    return GoogleArtWorkResponse(
+        success=True,
+        match_title=page_title,
+        match_paragraph = match_paragraph or [],
+        match_table=match_table or []
     )
-    async def recognize_artwork(image: UploadFile = File(...)):
-        """
-        Recognize artwork from uploaded image and return top 3 matches
+
+@app.post(
+    "/recognize",
+    response_model=RecognitionResponse,
+    summary="Recognize Artwork",
+    description="Upload an image and get the top 3 most similar artworks with similarity scores",
+    responses={
+        400: {"model": ErrorResponse},
+        500: {"model": ErrorResponse}
+    }
+)
+async def recognize_artwork(image: UploadFile = File(...)):
+    """
+    Recognize artwork from uploaded image and return top 3 matches
+    
+    - **image**: Image file (JPG, JPEG, PNG)
+    """
+    try:
+        # Check if models are initialized
+        if not extractor or not search_engine:
+            raise HTTPException(status_code=500, detail="Models not initialized")
         
-        - **image**: Image file (JPG, JPEG, PNG)
-        """
-        try:
-            # Check if models are initialized
-            if not extractor or not search_engine:
-                raise HTTPException(status_code=500, detail="Models not initialized")
-            
-            # Check file type
-            allowed_extensions = {'jpg', 'jpeg', 'png'}
-            file_extension = image.filename.split('.')[-1].lower() if '.' in image.filename else ''
-            
-            if file_extension not in allowed_extensions:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Invalid file type. Please upload JPG, JPEG, or PNG"
-                )
-            
-            # Read and process the image
-            image_data = await image.read()
-            pil_image = Image.open(io.BytesIO(image_data)).convert('RGB')
-            
-            # Extract features from the uploaded image
-            print(f"🔍 Processing uploaded image: {image.filename}")
-            query_features = extract_single_features_from_image(extractor, pil_image)
-            
-            if query_features is None:
-                raise HTTPException(
-                    status_code=500, 
-                    detail="Failed to extract features from image"
-                )
-            
-            # Search for similar artworks
-            results = search_engine.search_across_all_artworks(query_features, top_k=3)
-            
-            # Format the response
-            matches = []
-            for i, result in enumerate(results):
-                artwork_id = result['artwork_id']
-                best_similarity = result['best_similarity']
-                avg_similarity = result['avg_similarity']
-                photo_count = result['photo_count']
-                
-                # Determine confidence level
-                percentage = best_similarity * 100
-                if percentage >= 80:
-                    confidence = "VERY_HIGH"
-                elif percentage >= 70:
-                    confidence = "HIGH"
-                elif percentage >= 60:
-                    confidence = "MEDIUM_HIGH"
-                elif percentage >= 50:
-                    confidence = "MEDIUM"
-                else:
-                    confidence = "LOW"
-                
-                match_result = MatchResult(
-                    rank=i + 1,
-                    artwork_id=artwork_id,
-                    similarity_score=round(best_similarity, 4),
-                    similarity_percentage=round(percentage, 2),
-                    confidence=confidence,
-                    average_similarity=round(avg_similarity, 4),
-                    photos_compared=photo_count
-                )
-                matches.append(match_result)
-            
-            print(f"✅ Recognition completed for {image.filename}")
-            return RecognitionResponse(
-                success=True,
-                query_image=image.filename,
-                matches=matches
+        # Check file type
+        allowed_extensions = {'jpg', 'jpeg', 'png'}
+        file_extension = image.filename.split('.')[-1].lower() if '.' in image.filename else ''
+        
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid file type. Please upload JPG, JPEG, or PNG"
             )
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"❌ Error in recognition: {str(e)}")
+        
+        # Read and process the image
+        image_data = await image.read()
+        pil_image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        
+        # Extract features from the uploaded image
+        print(f"🔍 Processing uploaded image: {image.filename}")
+        query_features = extract_single_features_from_image(extractor, pil_image)
+        
+        if query_features is None:
             raise HTTPException(
                 status_code=500, 
-                detail=f"Internal server error: {str(e)}"
+                detail="Failed to extract features from image"
             )
+        
+        # Search for similar artworks
+        results = search_engine.search_across_all_artworks(query_features, top_k=3)
+        
+        # Format the response
+        matches = []
+        for i, result in enumerate(results):
+            artwork_id = result['artwork_id']
+            best_similarity = result['best_similarity']
+            avg_similarity = result['avg_similarity']
+            photo_count = result['photo_count']
+            
+            # Determine confidence level
+            percentage = best_similarity * 100
+            if percentage >= 80:
+                confidence = "VERY_HIGH"
+            elif percentage >= 70:
+                confidence = "HIGH"
+            elif percentage >= 60:
+                confidence = "MEDIUM_HIGH"
+            elif percentage >= 50:
+                confidence = "MEDIUM"
+            else:
+                confidence = "LOW"
+            
+            match_result = MatchResult(
+                rank=i + 1,
+                artwork_id=artwork_id,
+                similarity_score=round(best_similarity, 4),
+                similarity_percentage=round(percentage, 2),
+                confidence=confidence,
+                average_similarity=round(avg_similarity, 4),
+                photos_compared=photo_count
+            )
+            matches.append(match_result)
+        
+        print(f"✅ Recognition completed for {image.filename}")
+        return RecognitionResponse(
+            success=True,
+            query_image=image.filename,
+            matches=matches
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in recognition: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal server error: {str(e)}"
+        )
 
     @app.post(
         "/recognize_url",
