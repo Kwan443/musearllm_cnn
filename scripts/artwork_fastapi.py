@@ -13,7 +13,7 @@ import torch
 import requests
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
-
+import re
 
 from multi_feature_extractor import MultiArtworkFeatureExtractor
 from multi_similarity_search import MultiPhotoSimilaritySearch
@@ -24,6 +24,8 @@ app = FastAPI(
     description="API for recognizing artworks using CNN features and similarity search",
     version="1.0.0"
 )
+
+filterList = ['ebay', 'https://www.amazon.com', 'https://www.youtube.com', 'etsy', 'https://www.facebook.com', 'https://us.amazon.com', ' https://www.walmart.com']
 
 # Add CORS middleware
 app.add_middleware(
@@ -55,9 +57,7 @@ class ArtworksResponse(BaseModel):
 
 class GoogleArtWorkResponse(BaseModel):
     success: bool
-    match_title: str
-    match_paragraph: List[str]
-    match_table: List[str]
+    response: dict
 
 class MatchResult(BaseModel):
     rank: int
@@ -178,61 +178,70 @@ async def getArtworkByGoogle(imageUrl: str = Query(..., description="Image URL t
     search = requests.get("https://serpapi.com/search", params=params)
     response = search.json()
     
+    # Regular expression pattern — matches if "ebay" or "amazon" appears
+    pattern = re.compile(r'(ebay|amazon)', re.IGNORECASE)
+    topResults = response.get("visual_matches")
 
-    match_paragraph = []
-    count = -1
-    while match_paragraph == []:
-        count+=1
-        firstResult = response.get("visual_matches")[count]
-        firstResultUrl = firstResult.get("link")
-
-        if not firstResultUrl:
+    for result in topResults:
+        for filterWord in filterList:
+            if re.search(filterWord,result.get("link")):
+                print(f"🔍 Skipping URL due to filter match: {result.get('link')}")
+                topResults.remove(result)
+                break
+    top3ResultUrls = [result.get("link") for result in topResults[:3]]
+    top3ResultsResponse = {}
+    
+    for resultURL in top3ResultUrls:
+        responseObj = {}
+        if not resultURL:
             raise HTTPException(status_code=404, detail="First match has no link.")
-        print("🔗 Scraping URL:", firstResultUrl)
+        print("🔗 Scraping URL:", resultURL)
 
         # Step 3 — Scrape webpage content
-        page_response = requests.get(firstResultUrl, timeout=20, headers={
+        page_response = requests.get(resultURL, timeout=20, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         })
+        print("Fetch status:", page_response.status_code)
 
-        if page_response.status_code != 200:
-            raise HTTPException(status_code=page_response.status_code, detail="Failed to fetch webpage")
+        if page_response.status_code == 200:
+        
+            # Step 4 — Parse content with BeautifulSoup
+            soup = BeautifulSoup(page_response.text, "html.parser")
 
-        # Step 4 — Parse content with BeautifulSoup
-        soup = BeautifulSoup(page_response.text, "html.parser")
+            # Example extraction: title and paragraph text
+            page_title = soup.title.string if soup.title else "No title"
+            responseObj["match_title"] = page_title
+            match_paragraph = []
+            for i, p_tag in enumerate(soup.find_all("p")):
+                if i >= 3:
+                    break
+                text = p_tag.get_text(strip=True)
+                if text:
+                    match_paragraph.append(text)
+            responseObj["match_paragraph"] = match_paragraph
+            # Step 5 — Extract first 3 tables and all their cells
+            match_table = []
+            for i, t in enumerate(soup.find_all("table")):
+                if i >= 2:
+                    break
+                # Extract cells from all rows
+                rows = []
+                for tr in t.find_all("tr"):
+                    cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                    if cells:
+                        rows.append(cells)
 
-        # Example extraction: title and paragraph text
-        page_title = soup.title.string if soup.title else "No title"
-        for i, p_tag in enumerate(soup.find_all("p")):
-            if i >= 3:
-                break
-            text = p_tag.get_text(strip=True)
-            if text:
-                match_paragraph.append(text)
-
-        # Step 5 — Extract first 3 tables and all their cells
-        match_table = []
-        for i, t in enumerate(soup.find_all("table")):
-            if i >= 2:
-                break
-            # Extract cells from all rows
-            rows = []
-            for tr in t.find_all("tr"):
-                cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                if cells:
-                    rows.append(cells)
-
-            # Convert this table (list of rows) into a single readable string
-            if rows:
-                # " | " separates cells, "\n" separates rows
-                table_text = "\n".join(" | ".join(row) for row in rows)
-                match_table.append(table_text)
-        # print("Content: ", {match_paragraph,match_table})
+                # Convert this table (list of rows) into a single readable string
+                if rows:
+                    # " | " separates cells, "\n" separates rows
+                    table_text = "\n".join(" | ".join(row) for row in rows)
+                    match_table.append(table_text)
+            responseObj["match_table"] = match_table
+            top3ResultsResponse[page_title] = {"match_paragraph":match_paragraph,"match_table":match_table}
+            print()
     return GoogleArtWorkResponse(
         success=True,
-        match_title=page_title,
-        match_paragraph = match_paragraph or [],
-        match_table=match_table or []
+        response=top3ResultsResponse
     )
 
 @app.post(
@@ -331,18 +340,18 @@ async def recognize_artwork(image: UploadFile = File(...)):
             detail=f"Internal server error: {str(e)}"
         )
 
-    @app.post(
-        "/recognize_url",
-        summary="Recognize from URL",
-        description="Recognize artwork from image URL (Not implemented yet)",
-        responses={501: {"model": ErrorResponse}}
-    )
-    async def recognize_artwork_from_url(request: URLRequest):
-        """
-        Recognize artwork from image URL
-        
-        - **image_url**: URL of the image to analyze
-        """
+@app.post(
+    "/recognize_url",
+    summary="Recognize from URL",
+    description="Recognize artwork from image URL (Not implemented yet)",
+    responses={501: {"model": ErrorResponse}}
+)
+async def recognize_artwork_from_url(request: URLRequest):
+    """
+    Recognize artwork from image URL
+    
+    - **image_url**: URL of the image to analyze
+    """
     return JSONResponse(
         status_code=501,
         content={
