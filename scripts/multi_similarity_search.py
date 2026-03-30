@@ -31,11 +31,19 @@ class MultiPhotoSimilaritySearch:
 
             for feature_path in feature_paths:
                 try:
-                    if os.path.exists(feature_path):
-                        features = np.load(feature_path)
+                    # If stored path is not absolute or missing, try resolving relative to features_dir
+                    fp = feature_path
+                    if not os.path.isabs(fp):
+                        # try path as-is first, then fallback to basename under features_dir
+                        if not os.path.exists(fp):
+                            candidate = os.path.join(self.features_dir, os.path.basename(fp))
+                            if os.path.exists(candidate):
+                                fp = candidate
+                    if os.path.exists(fp):
+                        features = np.load(fp)
                         features_list.append(features)
                     else:
-                        print(f"   ⚠️ Feature file missing: {feature_path}")
+                        print(f"   ⚠️ Feature file missing: {feature_path} (tried: {fp})")
                 except Exception as e:
                     print(f"   ⚠️ Failed to load feature {feature_path}: {e}")
             

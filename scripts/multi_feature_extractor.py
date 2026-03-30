@@ -89,18 +89,38 @@ class MultiArtworkFeatureExtractor:
         
         # Save multiple feature vectors for the same artwork
         feature_paths = []
+
+        # If artwork already exists in metadata, append new photos instead of overwriting
+        existing_meta = self.metadata.get(artwork_id)
+        start_index = 0
+        existing_feature_paths = []
+        existing_photo_paths = []
+        if existing_meta:
+            existing_photo_paths = existing_meta.get('photo_paths', [])
+            existing_feature_paths = existing_meta.get('feature_paths', [])
+            start_index = existing_meta.get('photo_count', 0)
+
         for i, features in enumerate(all_features):
-            feature_filename = f"{artwork_id}_photo{i+1}.npy"
+            idx = start_index + i + 1
+            feature_filename = f"{artwork_id}_photo{idx}.npy"
             feature_path = os.path.join(self.features_dir, feature_filename)
-            np.save(feature_path, features)
-            feature_paths.append(feature_path)
-        
-        # Update metadata with multiple photos
+            # Ensure directory exists (defensive)
+            os.makedirs(os.path.dirname(feature_path), exist_ok=True)
+            try:
+                np.save(feature_path, features)
+                feature_paths.append(feature_path)
+            except Exception as e:
+                print(f"   ⚠️ Failed to save feature {feature_path}: {e}")
+
+        # Merge with existing metadata if present
+        merged_photo_paths = list(existing_photo_paths) + successful_photos
+        merged_feature_paths = list(existing_feature_paths) + feature_paths
+
         self.metadata[artwork_id] = {
             'artwork_id': artwork_id,
-            'photo_count': len(all_features),
-            'photo_paths': successful_photos,
-            'feature_paths': feature_paths,
+            'photo_count': len(merged_feature_paths),
+            'photo_paths': merged_photo_paths,
+            'feature_paths': merged_feature_paths,
             'timestamp': np.datetime64('now').astype(str)
         }
         
@@ -118,14 +138,20 @@ class MultiArtworkFeatureExtractor:
         total_processed = 0
         
         for artwork_id, photo_paths in grouped_images.items():
-            # Skip if already processed
-            if artwork_id in self.metadata:
-                print(f"⏭️ Skipping {artwork_id} (already processed)")
-                continue
-            
-            print(f"\n🖼️ Processing artwork: {artwork_id}")
-            
-            success = self.save_multi_photo_features(photo_paths, artwork_id)
+            # If artwork exists in metadata, check whether all photos already processed
+            existing = self.metadata.get(artwork_id)
+            if existing:
+                existing_basenames = {os.path.basename(p) for p in existing.get('photo_paths', [])}
+                new_paths = [p for p in photo_paths if os.path.basename(p) not in existing_basenames]
+                if not new_paths:
+                    print(f"⏭️ Skipping {artwork_id} (already processed)")
+                    continue
+                print(f"\n🖼️ Processing artwork (adding {len(new_paths)} new photos): {artwork_id}")
+                success = self.save_multi_photo_features(new_paths, artwork_id)
+            else:
+                print(f"\n🖼️ Processing artwork: {artwork_id}")
+                success = self.save_multi_photo_features(photo_paths, artwork_id)
+
             if success:
                 total_processed += 1
         
