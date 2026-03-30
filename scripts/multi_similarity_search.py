@@ -9,22 +9,35 @@ class MultiPhotoSimilaritySearch:
         self.metadata_file = os.path.join(storage_dir, "metadata.json")
         self.features_dir = os.path.join(storage_dir, "features")
         
-        # Load metadata
-        with open(self.metadata_file, 'r') as f:
-            self.metadata = json.load(f)
+        # Load metadata (be tolerant if file missing)
+        if not os.path.exists(self.metadata_file):
+            print(f"⚠️ Metadata file not found: {self.metadata_file} — continuing with empty index")
+            self.metadata = {}
+        else:
+            try:
+                with open(self.metadata_file, 'r') as f:
+                    self.metadata = json.load(f)
+            except Exception as e:
+                print(f"⚠️ Failed to load metadata.json: {e} — continuing with empty metadata")
+                self.metadata = {}
         
         # Load features for multi-photo artworks
         self.artwork_features = {}  # {artwork_id: [feature1, feature2, ...]}
         self.artwork_ids = []
         
         for artwork_id, meta in self.metadata.items():
-            feature_paths = meta['feature_paths']
+            feature_paths = meta.get('feature_paths', [])
             features_list = []
-            
+
             for feature_path in feature_paths:
-                if os.path.exists(feature_path):
-                    features = np.load(feature_path)
-                    features_list.append(features)
+                try:
+                    if os.path.exists(feature_path):
+                        features = np.load(feature_path)
+                        features_list.append(features)
+                    else:
+                        print(f"   ⚠️ Feature file missing: {feature_path}")
+                except Exception as e:
+                    print(f"   ⚠️ Failed to load feature {feature_path}: {e}")
             
             if features_list:
                 # Normalize each feature vector

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import json
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -80,6 +80,13 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
 
+
+class CNNInfoResponse(BaseModel):
+    modelName: Optional[str] = None
+    modelPath: Optional[str] = None
+    artworks_loaded: Optional[int] = 0
+    feature_files: Optional[int] = 0
+
 def extract_single_features_from_image(extractor, image):
     """Extract features from PIL Image object"""
     try:
@@ -109,8 +116,22 @@ async def startup_event():
         search_engine = MultiPhotoSimilaritySearch()
         print("✅ Models initialized successfully!")
     except Exception as e:
+        # Don't raise here — allow the API to start even if no features/photos exist.
         print(f"❌ Failed to initialize models: {str(e)}")
-        raise e
+        print("⚠️ Continuing startup with partial initialization. Some endpoints may be limited until models/index are available.")
+        # If extractor partially initialized, keep it; otherwise set to None
+        try:
+            if 'extractor' in locals() and extractor:
+                pass
+            else:
+                extractor = None
+        except Exception:
+            extractor = None
+
+        try:
+            search_engine = None
+        except Exception:
+            search_engine = None
 
 @app.get("/", include_in_schema=False)
 async def root():
@@ -339,6 +360,120 @@ async def recognize_artwork(image: UploadFile = File(...)):
             status_code=500, 
             detail=f"Internal server error: {str(e)}"
         )
+
+
+@app.get(
+    "/cnn/info",
+    response_model=CNNInfoResponse,
+    summary="Get CNN info",
+    description="Returns basic info about the feature extractor and stored features"
+)
+async def get_cnn_info():
+    if not extractor:
+        raise HTTPException(status_code=500, detail="Extractor not initialized")
+
+    # Count feature files
+    features_dir = getattr(extractor, 'features_dir', '../artwork_features_multi/features')
+    count = 0
+    try:
+        if os.path.exists(features_dir):
+            count = len([f for f in os.listdir(features_dir) if f.endswith('.npy')])
+    except Exception:
+        count = 0
+
+    return CNNInfoResponse(
+        modelName=getattr(extractor, 'model_path', None),
+        modelPath=getattr(extractor, 'model_path', None),
+        artworks_loaded=len(search_engine.artwork_ids) if search_engine else 0,
+        feature_files=count
+    )
+
+
+def _do_reindex(photos_dir="../photos"):
+    global extractor, search_engine
+    try:
+        # re-run feature extraction over photos dir
+        extractor.process_multi_photo_directory(photos_dir)
+        # reload search engine so metadata is fresh
+        search_engine = MultiPhotoSimilaritySearch()
+        print("✅ Reindex completed")
+    except Exception as e:
+        print(f"❌ Reindex failed: {str(e)}")
+
+
+@app.post(
+    "/cnn/reindex",
+    summary="Start full reindex",
+    description="Triggers a full reindex (runs in background)"
+)
+async def reindex_cnn(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_do_reindex)
+    return JSONResponse(status_code=202, content={"status": "reindex started"})
+
+
+@app.post(
+    "/cnn/extract",
+    summary="Extract features for an artwork id",
+    description="Trigger feature extraction for a given artwork id (looks for photos in ../photos)"
+)
+async def extract_for_id(artwork_id: str = Query(..., description="Artwork id to extract")):
+    global extractor, search_engine
+    if not extractor:
+        raise HTTPException(status_code=500, detail="Extractor not initialized")
+
+    photos_dir = "../photos"
+    grouped = extractor.group_images_by_prefix(photos_dir)
+    if artwork_id not in grouped:
+        raise HTTPException(status_code=404, detail=f"No photos found for id {artwork_id}")
+
+    success = extractor.save_multi_photo_features(grouped[artwork_id], artwork_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Feature extraction failed")
+
+    # reload search engine
+    search_engine = MultiPhotoSimilaritySearch()
+    return JSONResponse(status_code=200, content={"status": "extracted", "artwork_id": artwork_id})
+
+
+@app.post(
+    "/photos/upload",
+    summary="Upload photo for artwork",
+    description="Upload a photo file associated with an artwork id. Saves file to ../photos and triggers feature extraction."
+)
+async def upload_photo(artwork_id: str = Query(..., description="Artwork id"), file: UploadFile = File(...)):
+    """Save an uploaded photo for an artwork and run extraction for that id."""
+    global extractor, search_engine
+    photos_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'photos'))
+    os.makedirs(photos_dir, exist_ok=True)
+
+    # Construct a filename that groups by artwork id as prefix
+    safe_name = os.path.basename(file.filename)
+    save_name = f"{artwork_id} {safe_name}"
+    save_path = os.path.join(photos_dir, save_name)
+
+    try:
+        contents = await file.read()
+        with open(save_path, 'wb') as f:
+            f.write(contents)
+    except Exception as e:
+        print(f"❌ Failed to save uploaded file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save file")
+
+    # If extractor is available, run feature extraction for this artwork
+    try:
+        if extractor:
+            extractor.save_multi_photo_features([save_path], artwork_id)
+        # Reload search engine to include new features if possible
+        try:
+            search_engine = MultiPhotoSimilaritySearch()
+        except Exception as e:
+            print(f"⚠️ Failed to reload search engine after upload: {e}")
+    except Exception as e:
+        print(f"❌ Error during extraction/save: {e}")
+        # return success for upload but indicate extraction problem
+        return JSONResponse(status_code=201, content={"status": "uploaded", "extraction": "failed", "detail": str(e)})
+
+    return JSONResponse(status_code=201, content={"status": "uploaded", "path": save_name})
 
 @app.post(
     "/recognize_url",

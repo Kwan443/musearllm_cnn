@@ -5,3 +5,7 @@ py multi_feature_extractor.py
 py artwork_fastapi.py
 
 http://localhost:8000/docs/ to see how to call
+
+
+cd scripts
+py artwork_fastapi.py
